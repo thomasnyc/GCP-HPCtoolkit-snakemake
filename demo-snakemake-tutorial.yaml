@@ -1,0 +1,182 @@
+# Copyright 2022 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+
+blueprint_name: snakemake-tutorial-demo
+
+vars:
+  project_id: service-hpc-project1
+  deployment_name: sm-tutor-demo
+  region: us-east4
+  zone: us-east4-a
+
+deployment_groups:
+- group: primary
+  modules:
+  # Source is an embedded module, denoted by "modules/*" without ./, ../, /
+  # as a prefix. To refer to a local or community module, prefix with ./, ../ or /
+  # Example - ./modules/network/vpc
+
+  - source: modules/network/pre-existing-vpc
+    kind: terraform
+    id: network1
+
+  - source: ./modules/file-system/filestore
+    kind: terraform
+    id: datafs
+    use: [network1]
+    settings:
+      labels: {"lab":"demo","user":"tl"}
+      local_mount: /data
+      filestore_tier: BASIC_HDD
+      size_gb: 1024
+
+  - source: modules/file-system/pre-existing-network-storage
+    kind: terraform
+    id: homefs
+    settings:
+      server_ip: 10.130.158.74
+      remote_mount: east4home
+      local_mount: /home
+      fs_type: nfs
+
+  # This debug_partition will work out of the box without requesting additional GCP quota.
+  - source: community/modules/compute/SchedMD-slurm-on-gcp-partition
+    kind: terraform
+    id: debug_partition
+    use:
+    - network1
+    - homefs
+    - datafs
+    settings:
+      labels: {"lab":"demo","user":"tl"}
+      partition_name: debug
+      max_node_count: 4
+      enable_placement: false
+      exclusive: false
+      machine_type: n2-standard-2
+
+  # This compute_partition is far more performant than debug_partition but may require requesting GCP quotas first. n2d-highmem-32 = 32vcpu and 256GB ram
+  - source: community/modules/compute/SchedMD-slurm-on-gcp-partition
+    kind: terraform
+    id: compute_partition_highmem
+    use:
+    - network1
+    - homefs
+    - datafs
+    settings:
+      labels: {"lab":"demo","user":"tl"}
+      partition_name: highmem
+      max_node_count: 32
+      machine_type: n2d-highmem-8
+      enable_placement: false
+      preemptible_bursting: false
+
+
+   # n2d-highmem-32 = 32vcpu and 256GB ram
+  - source: community/modules/compute/SchedMD-slurm-on-gcp-partition
+    kind: terraform
+    id: compute_partition_highmem_spot
+    use:
+    - network1
+    - homefs
+    - datafs
+    settings:
+      labels: {"lab":"ecker","user":"tl"}
+      partition_name: highmem-spot
+      max_node_count: 32
+      machine_type: n2d-highmem-8
+      enable_placement: false
+      preemptible_bursting: spot
+
+   # n2d-highcpu-128 = 128vcpu and 128GB ram
+  - source: community/modules/compute/SchedMD-slurm-on-gcp-partition
+    kind: terraform
+    id: compute_partition_highcpu
+    use:
+    - network1
+    - homefs
+    - datafs
+    settings:
+      labels: {"lab":"ecker","user":"tl"}
+      partition_name: highcpu
+      max_node_count: 8
+      machine_type: n2d-highcpu-8
+      enable_placement: false
+      preemptible_bursting: false
+
+  - source: community/modules/compute/SchedMD-slurm-on-gcp-partition
+    kind: terraform
+    id: compute_partition_highcpu_spot
+    use:
+    - network1
+    - homefs
+    - datafs
+    settings:
+      labels: {"lab":"demo","user":"tl"}
+      partition_name: highcpu-spot
+      max_node_count: 8
+      machine_type: n2d-highcpu-8
+      enable_placement: false
+      preemptible_bursting: spot
+
+
+  - source: community/modules/scheduler/SchedMD-slurm-on-gcp-controller
+    kind: terraform
+    id: slurm_controller
+    use:
+    - network1
+    - homefs
+    - datafs
+    - debug_partition  # debug partition will be default as it is listed first
+    - compute_partition_highmem
+    - compute_partition_highmem_spot
+    - compute_partition_highcpu
+    - compute_partition_highcpu_spot
+    settings:
+      labels: {"lab":"demo","user":"tl"}
+      compute_node_scopes:
+      - https://www.googleapis.com/auth/monitoring.write
+      - https://www.googleapis.com/auth/logging.write
+      - https://www.googleapis.com/auth/devstorage.read_write      
+      compute_startup_script: |
+        #!/bin/bash
+        chmod 0777 /mnt
+        chmod 0777 /data
+      controller_startup_script: |
+        #!/bin/bash
+        chmod 0777 /mnt
+        chmod 0777 /data
+
+  - source: community/modules/scheduler/SchedMD-slurm-on-gcp-login-node
+    kind: terraform
+    id: slurm_login
+    use:
+    - network1
+    - homefs
+    - datafs
+    - slurm_controller
+    settings:
+      labels: {"lab":"demo","user":"tl"}
+      login_node_count: 1
+      login_scopes:
+      - https://www.googleapis.com/auth/monitoring.write
+      - https://www.googleapis.com/auth/logging.write
+      - https://www.googleapis.com/auth/devstorage.read_write
+      login_startup_script: |
+        #!/bin/bash
+        chmod 0777 /mnt
+        chmod 0777 /data
+
